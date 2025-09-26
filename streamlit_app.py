@@ -6,10 +6,10 @@ import numpy as np
 import streamlit as st
 import yfinance as yf
 
-APP_NAME = "📈 S&P 500 Next‑Day Rise Scanner (Fixed)"
+APP_NAME = "📈 S&P 500 Next‑Day Rise Scanner (Hardcoded)"
 st.set_page_config(page_title=APP_NAME, layout="wide")
 st.title(APP_NAME)
-st.caption("Fixes: explicit scalar casts (.item()), NaN guards, and safe boolean evaluation to avoid 'truth value of a Series is ambiguous'.")
+st.caption("Now using a hardcoded S&P 500 ticker list. No Wikipedia/CSV dependency.")
 
 # -----------------------------
 # Settings
@@ -18,7 +18,7 @@ with st.sidebar:
     st.subheader("Settings")
     vol_mult = st.number_input("Volume multiple (vs 20‑day avg) ≥", min_value=1.0, value=1.3, step=0.1)
     rr_min = st.number_input("Min Risk/Reward", min_value=1.0, value=2.0, step=0.5)
-    max_universe = st.number_input("Max tickers to scan (set 505 for full S&P)", min_value=50, value=250, step=25)
+    max_universe = st.number_input("Max tickers to scan", min_value=50, value=250, step=25)
     sleep_s = st.number_input("Sleep between downloads (sec)", min_value=0.0, value=0.4, step=0.1)
     retries = st.slider("Max retries per ticker", 0, 5, 2)
     days = st.slider("Lookback period (days)", 90, 365, 180)
@@ -26,22 +26,20 @@ with st.sidebar:
     export_filename = st.text_input("Export base filename", "sp500_nextday_scan")
 
 # -----------------------------
-# Utilities
+# Hardcoded universe
 # -----------------------------
-@st.cache_data(show_spinner=False)
-def load_sp500_fallback():
-    try:
-        tables = pd.read_html("https://en.wikipedia.org/wiki/List_of_S%26P_500_companies")
-        df = tables[0]
-        tickers = df["Symbol"].tolist()
-        tickers = [t.replace(".", "-") for t in tickers]
-        return tickers
-    except Exception:
-        df = pd.read_csv("sp500_tickers_fallback.csv")
-        tickers = df["Symbol"].tolist()
-        tickers = [t.replace(".", "-") for t in tickers]
-        return tickers
+UNIVERSE = ['AAPL', 'MSFT', 'GOOGL', 'AMZN', 'META', 'NVDA', 'BRK-B', 'UNH', 'XOM', 'LLY', 'JPM', 'V', 'MA', 'HD', 'PG', 'CVX', 'AVGO', 'COST', 'JNJ', 'MRK', 'PEP', 'ABBV', 'KO', 'BAC', 'ADBE', 'WMT', 'NFLX', 'CRM', 'TMO', 'LIN', 'TXN', 'PFE', 'ABT', 'CSCO', 'ACN', 'AMD', 'MCD', 'DHR', 'INTC', 'INTU', 'QCOM', 'LOW', 'AMGN', 'PM', 'HON', 'AMAT', 'BMY', 'IBM', 'GE', 'GS', 'CAT', 'NOW', 'BA', 'ISRG', 'BKNG', 'MDT', 'RTX', 'BLK', 'SPGI', 'PLD', 'DE', 'AMT', 'SYK', 'LMT', 'SCHW', 'MS', 'ADI', 'GILD', 'MU', 'ETN', 'ONTO', 'IONQ']
 
+if len(UNIVERSE) > max_universe:
+    universe = UNIVERSE[: int(max_universe)]
+else:
+    universe = UNIVERSE
+
+st.info(f"Scanning {len(universe)} tickers... (adjust in the sidebar)")
+
+# -----------------------------
+# Utils
+# -----------------------------
 def macd(series, fast=12, slow=26, signal=9):
     ema_fast = series.ewm(span=fast, adjust=False).mean()
     ema_slow = series.ewm(span=slow, adjust=False).mean()
@@ -50,7 +48,6 @@ def macd(series, fast=12, slow=26, signal=9):
     hist = macd_line - signal_line
     return macd_line, signal_line, hist
 
-@st.cache_data(show_spinner=False)
 def fetch_one(ticker: str, period_days: int, retries: int, sleep: float):
     last_err = None
     for i in range(retries + 1):
@@ -70,29 +67,9 @@ def fetch_one(ticker: str, period_days: int, retries: int, sleep: float):
         time.sleep(sleep * (i + 1))
     raise RuntimeError(f"{ticker}: {last_err}")
 
-def safe_bool(x):
-    """Return a Python bool from a scalar-like, guarding against Series/NaN."""
-    if hasattr(x, 'item'):
-        try:
-            x = x.item()
-        except Exception:
-            pass
-    if isinstance(x, (np.ndarray, pd.Series)):
-        # Reduce array/Series to single truth via all()
-        return bool(np.all(x))
-    if x is None or (isinstance(x, float) and (np.isnan(x) or np.isinf(x))):
-        return False
-    return bool(x)
-
 # -----------------------------
-# Main
+# Main loop
 # -----------------------------
-universe = load_sp500_fallback()
-if len(universe) > max_universe:
-    universe = universe[: int(max_universe)]
-
-st.info(f"Scanning {len(universe)} tickers... (adjust in the sidebar)")
-
 rows = []
 failures = []
 progress = st.progress(0)
@@ -112,37 +89,36 @@ for idx, t in enumerate(universe, start=1):
         c_last = float(close.iloc[-1])
         e20 = float(ema20.iloc[-1])
         e50 = float(ema50.iloc[-1])
-        trend_ok = safe_bool((e20 > e50) and (c_last > e20))
+        trend_ok = (e20 > e50) and (c_last > e20)
 
-        # MACD momentum
+        # MACD
         macd_line, sig_line, hist = macd(close)
         m_last = float(macd_line.iloc[-1])
         s_last = float(sig_line.iloc[-1])
         h_last = float(hist.iloc[-1])
-        h_prev = float(hist.iloc[-2]) if not np.isnan(float(hist.iloc[-2])) else -np.inf
-        macd_ok = safe_bool((m_last > s_last) and (h_last > 0) and (h_last > h_prev))
+        h_prev = float(hist.iloc[-2])
+        macd_ok = (m_last > s_last) and (h_last > 0) and (h_last > h_prev)
 
-        # Volume accumulation
+        # Volume
         vol_avg20 = vol.rolling(20).mean()
         v_last = float(vol.iloc[-1])
-        v_avg = float(vol_avg20.iloc[-1]) if not np.isnan(float(vol_avg20.iloc[-1])) else np.inf
-        vol_ok = safe_bool(v_last >= vol_mult * v_avg)
+        v_avg = float(vol_avg20.iloc[-1])
+        vol_ok = (v_last >= vol_mult * v_avg)
 
-        # Simple R/R check
+        # R/R
         entry = c_last
         stop = e50
-        if (stop <= 0) or (entry <= stop) or not np.isfinite(stop):
+        if stop <= 0 or entry <= stop:
             rr_ok = False
             target = None
             rr = None
-            risk = None
         else:
             risk = entry - stop
             target = entry + rr_min * risk
-            rr = (target - entry) / risk if risk else None
-            rr_ok = safe_bool(rr is not None and rr >= rr_min)
+            rr = (target - entry) / risk
+            rr_ok = rr >= rr_min
 
-        # Scoring (4 = PRIME)
+        # Score
         score = int(trend_ok) + int(macd_ok) + int(vol_ok) + int(rr_ok)
         status = "PRIME" if score == 4 else ("Candidate" if score >= 3 else "Pass")
 
@@ -153,10 +129,7 @@ for idx, t in enumerate(universe, start=1):
                 "Stop(EMA50)": round(stop, 2) if stop else None,
                 "Target": round(target, 2) if target else None,
                 "R/R": round(rr, 2) if rr else None,
-                "TrendOK": trend_ok,
-                "MACD_OK": macd_ok,
-                "VolOK": vol_ok,
-                "Score(0-4)": score,
+                "Score": score,
                 "Status": status,
             })
     except Exception as e:
@@ -168,22 +141,10 @@ for idx, t in enumerate(universe, start=1):
 # Output
 # -----------------------------
 if rows:
-    df = pd.DataFrame(rows).sort_values(["Status","Score(0-4)","R/R"], ascending=[True, False, False])
+    df = pd.DataFrame(rows).sort_values(["Status","Score","R/R"], ascending=[True, False, False])
     st.subheader("Results")
     st.dataframe(df, use_container_width=True)
     csv = df.to_csv(index=False).encode("utf-8")
     st.download_button("⬇️ Download CSV", data=csv, file_name=f"{export_filename}.csv", mime="text/csv")
-    try:
-        with pd.ExcelWriter(f"{export_filename}.xlsx", engine="xlsxwriter") as writer:
-            df.to_excel(writer, index=False, sheet_name="results")
-        with open(f"{export_filename}.xlsx", "rb") as f:
-            st.download_button("⬇️ Download Excel", data=f, file_name=f"{export_filename}.xlsx", mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
-    except Exception:
-        st.info("Install xlsxwriter to enable Excel export.")
 else:
-    st.warning("No PRIME/Candidate tickers found with current thresholds. Try lowering volume multiple or min R/R.")
-
-if failures:
-    with st.expander("Show fetch warnings/errors"):
-        for t, msg in failures:
-            st.write(f"- {t}: {msg}")
+    st.warning("No PRIME/Candidate tickers found with current thresholds.")
