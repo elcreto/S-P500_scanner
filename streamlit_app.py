@@ -6,10 +6,10 @@ import numpy as np
 import streamlit as st
 import yfinance as yf
 
-APP_NAME = "📈 S&P 500 Next‑Day Rise Scanner (Streamlit)"
+APP_NAME = "📈 S&P 500 Next‑Day Rise Scanner (Fixed)"
 st.set_page_config(page_title=APP_NAME, layout="wide")
 st.title(APP_NAME)
-st.caption("Scans the S&P 500 and surfaces names most likely to rise tomorrow using simple, robust signals: Trend, MACD momentum, and Volume accumulation.")
+st.caption("Fixes: explicit scalar casts (.item()), NaN guards, and safe boolean evaluation to avoid 'truth value of a Series is ambiguous'.")
 
 # -----------------------------
 # Settings
@@ -31,15 +31,12 @@ with st.sidebar:
 @st.cache_data(show_spinner=False)
 def load_sp500_fallback():
     try:
-        # Try to fetch from Wikipedia live (may fail in some environments)
         tables = pd.read_html("https://en.wikipedia.org/wiki/List_of_S%26P_500_companies")
         df = tables[0]
         tickers = df["Symbol"].tolist()
-        # Normalize BRK.B and BF.B style tickers for Yahoo
         tickers = [t.replace(".", "-") for t in tickers]
         return tickers
     except Exception:
-        # Fallback to bundled CSV
         df = pd.read_csv("sp500_tickers_fallback.csv")
         tickers = df["Symbol"].tolist()
         tickers = [t.replace(".", "-") for t in tickers]
@@ -73,6 +70,20 @@ def fetch_one(ticker: str, period_days: int, retries: int, sleep: float):
         time.sleep(sleep * (i + 1))
     raise RuntimeError(f"{ticker}: {last_err}")
 
+def safe_bool(x):
+    """Return a Python bool from a scalar-like, guarding against Series/NaN."""
+    if hasattr(x, 'item'):
+        try:
+            x = x.item()
+        except Exception:
+            pass
+    if isinstance(x, (np.ndarray, pd.Series)):
+        # Reduce array/Series to single truth via all()
+        return bool(np.all(x))
+    if x is None or (isinstance(x, float) and (np.isnan(x) or np.isinf(x))):
+        return False
+    return bool(x)
+
 # -----------------------------
 # Main
 # -----------------------------
@@ -98,24 +109,29 @@ for idx, t in enumerate(universe, start=1):
         # Trend filters
         ema20 = close.ewm(span=20, adjust=False).mean()
         ema50 = close.ewm(span=50, adjust=False).mean()
-        trend_ok = bool(ema20.iloc[-1] > ema50.iloc[-1] and close.iloc[-1] > ema20.iloc[-1])
+        c_last = float(close.iloc[-1])
+        e20 = float(ema20.iloc[-1])
+        e50 = float(ema50.iloc[-1])
+        trend_ok = safe_bool((e20 > e50) and (c_last > e20))
 
         # MACD momentum
         macd_line, sig_line, hist = macd(close)
-        macd_ok = bool(
-            macd_line.iloc[-1] > sig_line.iloc[-1] and
-            hist.iloc[-1] > 0 and
-            hist.iloc[-1] > hist.iloc[-2]  # momentum improving
-        )
+        m_last = float(macd_line.iloc[-1])
+        s_last = float(sig_line.iloc[-1])
+        h_last = float(hist.iloc[-1])
+        h_prev = float(hist.iloc[-2]) if not np.isnan(float(hist.iloc[-2])) else -np.inf
+        macd_ok = safe_bool((m_last > s_last) and (h_last > 0) and (h_last > h_prev))
 
         # Volume accumulation
         vol_avg20 = vol.rolling(20).mean()
-        vol_ok = bool(vol.iloc[-1] >= vol_mult * vol_avg20.iloc[-1])
+        v_last = float(vol.iloc[-1])
+        v_avg = float(vol_avg20.iloc[-1]) if not np.isnan(float(vol_avg20.iloc[-1])) else np.inf
+        vol_ok = safe_bool(v_last >= vol_mult * v_avg)
 
-        # Simple R/R check (stop at EMA50, target = entry + rr_min * (entry - stop))
-        entry = float(close.iloc[-1])
-        stop = float(ema50.iloc[-1])
-        if stop <= 0 or entry <= stop:
+        # Simple R/R check
+        entry = c_last
+        stop = e50
+        if (stop <= 0) or (entry <= stop) or not np.isfinite(stop):
             rr_ok = False
             target = None
             rr = None
@@ -123,8 +139,8 @@ for idx, t in enumerate(universe, start=1):
         else:
             risk = entry - stop
             target = entry + rr_min * risk
-            rr = (target - entry) / risk
-            rr_ok = rr >= rr_min
+            rr = (target - entry) / risk if risk else None
+            rr_ok = safe_bool(rr is not None and rr >= rr_min)
 
         # Scoring (4 = PRIME)
         score = int(trend_ok) + int(macd_ok) + int(vol_ok) + int(rr_ok)
@@ -155,10 +171,8 @@ if rows:
     df = pd.DataFrame(rows).sort_values(["Status","Score(0-4)","R/R"], ascending=[True, False, False])
     st.subheader("Results")
     st.dataframe(df, use_container_width=True)
-
     csv = df.to_csv(index=False).encode("utf-8")
     st.download_button("⬇️ Download CSV", data=csv, file_name=f"{export_filename}.csv", mime="text/csv")
-
     try:
         with pd.ExcelWriter(f"{export_filename}.xlsx", engine="xlsxwriter") as writer:
             df.to_excel(writer, index=False, sheet_name="results")
