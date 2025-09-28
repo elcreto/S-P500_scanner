@@ -4,28 +4,24 @@ import numpy as np
 import streamlit as st
 import yfinance as yf
 
-APP_NAME = "📈 S&P 500 Scanner v3.5 — Auto‑Start (MACD/MACD‑V)"
+APP_NAME = "📈 S&P 500 Scanner v3.5 — Autostart + MACD Agreement Overlay"
 st.set_page_config(page_title=APP_NAME, layout="wide")
 st.title(APP_NAME)
-st.caption("Auto‑starts scanning the S&P 500 on load. Tries to fetch the full index from Wikipedia; falls back to a built‑in list if blocked. Includes Streamlit Cloud patch.")
+st.caption("Autostarts on load. MACD vs MACD‑V agreement adds a +1/0/‑1 overlay to the 0–5 score.")
 
-# -----------------------------
 # Sidebar controls
-# -----------------------------
 with st.sidebar:
     st.subheader("Controls")
-    macd_mode = st.selectbox("MACD Mode", ["Classic MACD", "MACD‑V (Volume‑weighted)"])
+    macd_mode = st.selectbox("Primary MACD Mode (used for pass/fail MACD)", ["Classic MACD", "MACD‑V (Volume‑weighted)"])
     vol_mult = st.number_input("Volume multiple (vs 20‑day avg) ≥", min_value=1.0, value=1.3, step=0.1)
     rr_min = st.number_input("Min Risk/Reward", min_value=1.0, value=2.0, step=0.5)
     max_universe = st.number_input("Max tickers to scan", min_value=50, value=500, step=50)
     sleep_s = st.number_input("Sleep between downloads (sec)", min_value=0.0, value=0.3, step=0.1)
     retries = st.slider("Max retries per ticker", 0, 5, 2)
     days = st.slider("Lookback period (days)", 90, 365, 180)
-    export_filename = st.text_input("Export base filename", "sp500_scan_v35")
+    export_filename = st.text_input("Export base filename", "sp500_scan_v35_overlay")
 
-# -----------------------------
 # Indicators
-# -----------------------------
 def macd_classic(series, fast=12, slow=26, signal=9):
     ema_fast = series.ewm(span=fast, adjust=False).mean()
     ema_slow = series.ewm(span=slow, adjust=False).mean()
@@ -67,53 +63,42 @@ def fetch_one(ticker: str, period_days: int, retries: int, sleep: float):
         time.sleep(sleep * (i + 1))
     return pd.DataFrame()
 
-# -----------------------------
-# Universe loading
-# -----------------------------
+# Universe loading (Wikipedia with fallback)
 EMBEDDED_SP500 = [
 "AAPL","MSFT","GOOGL","AMZN","META","NVDA","BRK-B","UNH","XOM","LLY","JPM","V","MA","HD","PG","COST","JNJ","MRK","PEP","KO",
 "BAC","ADBE","WMT","NFLX","CRM","TMO","AVGO","CVX","LIN","TXN","PFE","ABT","CSCO","ACN","AMD","MCD","DHR","INTC","INTU","QCOM",
 "LOW","AMGN","PM","HON","AMAT","BMY","IBM","GE","GS","CAT","NOW","BA","ISRG","BKNG","MDT","RTX","BLK","SPGI","PLD","DE","AMT",
 "SYK","LMT","SCHW","MS","ADI","GILD","MU","ETN","ONTO","IONQ","ORCL","TSLA","PYPL","SHOP","NKE","SBUX","T","VZ","C","USB","FDX",
-"UPS","MAR","LVS","DG","MMM","A","AKAM","ALB","ALGN","ALNY","AMCR","AMD","AEP","AIG","AON","APA","APD","APH","ARE","ATO","AXP",
-"AZO","BALL","BIIB","BK","BKR","BMY","BRO","CHTR","CL","CLX","CMCSA","CMG","COF","COP","CPRT","CSX","CTAS","CTSH","CVS","D","DAL",
-"DD","DLR","DOW","DUK","EA","EBAY","ECL","ED","EFX","EIX","EL","EMR","EOG","EQIX","EQR","EQT","ESS","ETSY","EXC","F","FAST","FCX",
-"FIS","FISV","FITB","FTNT","GD","GPN","HCA","HD","HES","HIG","HLT","HOLX","HPQ","ICE","ILMN","INTU","IP","IT","JNPR","KHC","KMI",
-"KMX","KO","LEN","LHX","LRCX","LULU","LYB","MAR","MKC","MMC","MNST","MO","MRNA","MSI","NEM","NOC","NOW","NTRS","NVDA","NVR","NWSA",
-"ODFL","OKE","ORLY","OTIS","PANW","PAYC","PCAR","PDD","PEP","PGR","PLD","PM","PNC","PNR","PWR","PYPL","QRVO","RBLX","REGN","RIVN",
-"ROK","ROL","ROST","RSG","SBAC","SHW","SIRI","SLB","SNPS","SO","SPG","SRE","STT","STZ","SWK","SYF","TDG","TEL","TGT","TJX","TLRY",
-"TMO","TRV","TSCO","TT","TTWO","TXN","TXT","UAL","UBER","UNH","UNP","UPS","USB","VFC","VLO","VMC","VRSK","VRTX","VTR","WAB","WBA",
-"WEC","WELL","WFC","WM","WMB","WMT","ZBH","ZTS"
+"UPS","MAR","DG","A","ALB","ALGN","ALNY","AEP","AIG","AON","APA","APD","APH","ARE","ATO","AXP","AZO","BALL","BIIB","BK","BKR",
+"BMY","CHTR","CL","CLX","CMCSA","CMG","COF","COP","CPRT","CSX","CTAS","CTSH","CVS","D","DAL","DD","DLR","DOW","DUK","EA","EBAY",
+"ECL","ED","EFX","EIX","EL","EMR","EOG","EQIX","EQR","EQT","ESS","ETSY","EXC","F","FAST","FCX","FIS","FISV","FITB","FTNT","GD",
+"GPN","HCA","HES","HIG","HLT","HOLX","HPQ","ICE","ILMN","INTU","IP","IT","JNPR","KHC","KMI","KMX","KO","LEN","LHX","LRCX","LULU",
+"LYB","MAR","MKC","MMC","MNST","MO","MRNA","MSI","NEM","NOC","NOW","NTRS","NVDA","NVR","NWSA","ODFL","OKE","ORLY","OTIS","PANW",
+"PAYC","PCAR","PDD","PEP","PGR","PLD","PM","PNC","PNR","PWR","PYPL","QRVO","REGN","ROK","ROL","ROST","RSG","SBAC","SHW","SIRI",
+"SLB","SNPS","SO","SPG","SRE","STT","STZ","SWK","SYF","TDG","TEL","TGT","TJX","TMO","TRV","TSCO","TT","TTWO","TXN","TXT","UAL",
+"UBER","UNH","UNP","UPS","USB","VFC","VLO","VMC","VRSK","VRTX","VTR","WAB","WBA","WEC","WELL","WFC","WM","WMB","WMT","ZBH","ZTS"
 ]
 
 @st.cache_data(show_spinner=True)
 def load_sp500_symbols():
-    # Try Wikipedia first
     try:
         tables = pd.read_html("https://en.wikipedia.org/wiki/List_of_S%26P_500_companies")
         df = tables[0]
         syms = df["Symbol"].astype(str).str.upper().str.replace(".", "-", regex=False).tolist()
-        # remove duplicates, keep order
-        seen = set()
-        out = []
+        seen, out = set(), []
         for s in syms:
             if s not in seen:
-                seen.add(s)
-                out.append(s)
+                seen.add(s); out.append(s)
         if len(out) >= 400:
             return out
-    except Exception as e:
+    except Exception:
         pass
-    # Fallback
     return EMBEDDED_SP500
 
 symbols = load_sp500_symbols()
 if len(symbols) > max_universe:
     symbols = symbols[: int(max_universe)]
 
-# -----------------------------
-# Scan on load (auto start)
-# -----------------------------
 st.info(f"Scanning {len(symbols)} tickers…")
 rows, failures = [], []
 progress = st.progress(0)
@@ -133,17 +118,33 @@ for idx, t in enumerate(symbols, start=1):
 
         c_last = float(close.iloc[-1])
         e20, e50 = float(ema20.iloc[-1]), float(ema50.iloc[-1])
-
         trend_ok = (e20 > e50) and (c_last > e20)
 
+        # Compute BOTH MACDs for overlay
+        macd_line_c, sig_line_c, hist_c = macd_classic(close)
+        macd_line_v, sig_line_v, hist_v = macd_v(close, vol)
+
+        # Use selected mode for pass/fail MACD check
         if macd_mode == "Classic MACD":
-            macd_line, sig_line, hist = macd_classic(close)
+            macd_line, sig_line, hist = macd_line_c, sig_line_c, hist_c
         else:
-            macd_line, sig_line, hist = macd_v(close, vol)
+            macd_line, sig_line, hist = macd_line_v, sig_line_v, hist_v
 
         m_last, s_last = float(macd_line.iloc[-1]), float(sig_line.iloc[-1])
         h_last, h_prev = float(hist.iloc[-1]), float(hist.iloc[-2])
         macd_ok = (m_last > s_last) and (h_last > 0) and (h_last > h_prev)
+
+        # Overlay agreement
+        h_macd = float(hist_c.iloc[-1])
+        h_macdv = float(hist_v.iloc[-1])
+        macd_agree = (h_macd > 0 and h_macdv > 0) or (h_macd < 0 and h_macdv < 0)
+        macd_diverge = (h_macd * h_macdv < 0)
+        macd_overlay = 0
+        if macd_agree and h_macd > 0:
+            macd_overlay = 1
+        elif macd_diverge:
+            macd_overlay = -1
+        macd_note = "✅ Bullish aligned" if (macd_agree and h_macd > 0) else ("❌ Bearish aligned" if (macd_agree and h_macd < 0) else ("⚠️ Divergent" if macd_diverge else "Neutral"))
 
         vol_avg20 = vol.rolling(20).mean()
         v_last, v_avg = float(vol.iloc[-1]), float(vol_avg20.iloc[-1])
@@ -159,17 +160,18 @@ for idx, t in enumerate(symbols, start=1):
             target, rr, rr_ok = None, None, False
 
         catalyst, catalyst_reason = False, "—"
-        score = int(trend_ok) + int(macd_ok) + int(vol_ok) + int(rr_ok) + int(catalyst)
+        base_score = int(trend_ok) + int(macd_ok) + int(vol_ok) + int(rr_ok) + int(catalyst)
+        adj_score = max(0, min(5, base_score + macd_overlay))
 
         status, notes = "Pass", ""
-        if score >= 3:
-            if score == 5:
+        if adj_score >= 3:
+            if adj_score == 5:
                 status, notes = "PRIME", "Clean TA + Catalyst"
-            elif score == 4 and catalyst:
+            elif adj_score == 4 and catalyst:
                 status, notes = "Catalyst PRIME", "News-driven"
-            elif score == 4:
+            elif adj_score == 4:
                 status, notes = "Strong TA", "Clean technicals"
-            elif score == 3:
+            elif adj_score == 3:
                 status, notes = "Candidate", "Early setup"
 
             rows.append({
@@ -178,7 +180,10 @@ for idx, t in enumerate(symbols, start=1):
                 "Stop(EMA50)": round(stop, 2) if stop else None,
                 "Target": round(target, 2) if target else None,
                 "R/R": round(rr, 2) if rr else None,
-                "Score (0-5)": score,
+                "Score (0-5)": base_score,
+                "Overlay (+1/0/-1)": macd_overlay,
+                "Adj Score (0-5)": adj_score,
+                "MACD Note": macd_note,
                 "Status": status,
                 "Catalyst": catalyst_reason,
                 "Notes": notes,
@@ -186,15 +191,13 @@ for idx, t in enumerate(symbols, start=1):
             })
     except Exception as e:
         failures.append((t, str(e)))
-    if idx % 5 == 0 or idx == len(symbols):
+    if idx % 10 == 0 or idx == len(symbols):
         progress.progress(idx / len(symbols))
         status_box.info(f"Scanning {idx}/{len(symbols)}…")
 
-# -----------------------------
 # Output
-# -----------------------------
 if rows:
-    df = pd.DataFrame(rows).sort_values(["Score (0-5)","Status"], ascending=[False, True])
+    df = pd.DataFrame(rows).sort_values(["Adj Score (0-5)","Status","R/R"], ascending=[False, True, False])
     st.subheader("Results")
     st.dataframe(df, use_container_width=True)
     csv = df.to_csv(index=False).encode("utf-8")
