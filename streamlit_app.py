@@ -4,12 +4,12 @@ import numpy as np
 import streamlit as st
 import yfinance as yf
 
-APP_NAME = "📈 S&P 500 Scanner v3.6 — Autostart (MACD‑V Only)"
+APP_NAME = "📈 S&P 500 Scanner v3.7 — Autostart (MACD‑V + Badges)"
 st.set_page_config(page_title=APP_NAME, layout="wide")
 st.title(APP_NAME)
-st.caption("Autostarts on load. Uses MACD‑V exclusively. 0–5 scoring with Trend, MACD‑V, Volume, R/R, Catalyst placeholder.")
+st.caption("Autostarts on load. MACD‑V only. Adds ✅/⚠️/❌ badges and sorts best→worst.")
 
-# Sidebar controls
+# Sidebar
 with st.sidebar:
     st.subheader("Controls")
     vol_mult = st.number_input("Volume multiple (vs 20‑day avg) ≥", min_value=1.0, value=1.3, step=0.1)
@@ -18,7 +18,7 @@ with st.sidebar:
     sleep_s = st.number_input("Sleep between downloads (sec)", min_value=0.0, value=0.3, step=0.1)
     retries = st.slider("Max retries per ticker", 0, 5, 2)
     days = st.slider("Lookback period (days)", 90, 365, 180)
-    export_filename = st.text_input("Export base filename", "sp500_scan_v36_macdv")
+    export_filename = st.text_input("Export base filename", "sp500_scan_v37_macdv_badges")
 
 # Indicators (MACD‑V only)
 def vwema(price: pd.Series, volume: pd.Series, span: int) -> pd.Series:
@@ -54,7 +54,7 @@ def fetch_one(ticker: str, period_days: int, retries: int, sleep: float):
         time.sleep(sleep * (i + 1))
     return pd.DataFrame()
 
-# Universe loading (Wikipedia with fallback list)
+# Universe (Wikipedia with fallback)
 EMBEDDED_SP500 = [
 "AAPL","MSFT","GOOGL","AMZN","META","NVDA","BRK-B","UNH","XOM","LLY","JPM","V","MA","HD","PG","COST","JNJ","MRK","PEP","KO",
 "BAC","ADBE","WMT","NFLX","CRM","TMO","AVGO","CVX","LIN","TXN","PFE","ABT","CSCO","ACN","AMD","MCD","DHR","INTC","INTU","QCOM",
@@ -96,6 +96,18 @@ rows, failures = [], []
 progress = st.progress(0)
 status_box = st.empty()
 
+def macdv_badge(hist_series):
+    # Badge + weight for sorting
+    if len(hist_series) < 2:
+        return "⚠️ Weak/Flat", 1
+    last = float(hist_series.iloc[-1])
+    prev = float(hist_series.iloc[-2])
+    if last > 0 and last > prev:
+        return "✅ Bullish", 2
+    if last < 0:
+        return "❌ Bearish", 0
+    return "⚠️ Weak/Flat", 1
+
 for idx, t in enumerate(symbols, start=1):
     try:
         data = fetch_one(t, days, retries, sleep_s)
@@ -112,10 +124,12 @@ for idx, t in enumerate(symbols, start=1):
         e20, e50 = float(ema20.iloc[-1]), float(ema50.iloc[-1])
         trend_ok = (e20 > e50) and (c_last > e20)
 
-        macd_line_v, sig_line_v, hist_v = macd_v(close, vol)
-        m_last, s_last = float(macd_line_v.iloc[-1]), float(sig_line_v.iloc[-1])
-        h_last, h_prev = float(hist_v.iloc[-1]), float(hist_v.iloc[-2])
-        macd_ok = (m_last > s_last) and (h_last > 0) and (h_last > h_prev)
+        _, _, hist_v = macd_v(close, vol)
+        m_note, m_weight = macdv_badge(hist_v)
+
+        m_last = float(hist_v.iloc[-1])
+        m_prev = float(hist_v.iloc[-2]) if len(hist_v) >= 2 else m_last
+        macd_ok = (m_last > 0) and (m_last > m_prev)
 
         vol_avg20 = vol.rolling(20).mean()
         v_last, v_avg = float(vol.iloc[-1]), float(vol_avg20.iloc[-1])
@@ -130,11 +144,13 @@ for idx, t in enumerate(symbols, start=1):
         else:
             target, rr, rr_ok = None, None, False
 
-        catalyst, catalyst_reason = False, "—"
+        catalyst = False  # placeholder
         score = int(trend_ok) + int(macd_ok) + int(vol_ok) + int(rr_ok) + int(catalyst)
 
-        if score >= 3:
-            status, notes = ("PRIME","Clean TA + Catalyst") if score == 5 else                             (("Catalyst PRIME","News-driven") if (score == 4 and catalyst) else                              (("Strong TA","Clean technicals") if score == 4 else ("Candidate","Early setup")))
+        if score >= 0:  # keep all, you asked to see losers too
+            status = ("PRIME" if score == 5 else
+                      ("Strong TA" if score == 4 else
+                       ("Candidate" if score == 3 else "Weak/Skip")))
 
             rows.append({
                 "Ticker": t,
@@ -144,8 +160,8 @@ for idx, t in enumerate(symbols, start=1):
                 "R/R": round(rr, 2) if rr else None,
                 "Score (0-5)": score,
                 "Status": status,
-                "Notes": notes,
-                "MACD": "MACD‑V",
+                "MACD‑V": m_note,
+                "_MACD_Weight": m_weight
             })
     except Exception as e:
         failures.append((t, str(e)))
@@ -155,13 +171,16 @@ for idx, t in enumerate(symbols, start=1):
 
 # Output
 if rows:
-    df = pd.DataFrame(rows).sort_values(["Score (0-5)","Status","R/R"], ascending=[False, True, False])
+    df = pd.DataFrame(rows)
+    # Sort: Score desc → Status → R/R desc → MACD‑V badge weight desc
+    df = df.sort_values(["Score (0-5)", "Status", "R/R", "_MACD_Weight"],
+                        ascending=[False, True, False, False]).drop(columns=["_MACD_Weight"])
     st.subheader("Results")
     st.dataframe(df, use_container_width=True)
     csv = df.to_csv(index=False).encode("utf-8")
     st.download_button("⬇️ Download CSV", data=csv, file_name=f"{export_filename}.csv", mime="text/csv")
 else:
-    st.warning("No candidates found. Try loosening thresholds or increasing universe size.")
+    st.warning("No candidates found. Try adjusting thresholds/universe.")
 
 if failures:
     with st.expander("Fetch errors"):
