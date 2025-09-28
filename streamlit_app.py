@@ -4,32 +4,23 @@ import numpy as np
 import streamlit as st
 import yfinance as yf
 
-APP_NAME = "📈 S&P 500 Scanner v3.5 — Autostart + MACD Agreement Overlay"
+APP_NAME = "📈 S&P 500 Scanner v3.6 — Autostart (MACD‑V Only)"
 st.set_page_config(page_title=APP_NAME, layout="wide")
 st.title(APP_NAME)
-st.caption("Autostarts on load. MACD vs MACD‑V agreement adds a +1/0/‑1 overlay to the 0–5 score.")
+st.caption("Autostarts on load. Uses MACD‑V exclusively. 0–5 scoring with Trend, MACD‑V, Volume, R/R, Catalyst placeholder.")
 
 # Sidebar controls
 with st.sidebar:
     st.subheader("Controls")
-    macd_mode = st.selectbox("Primary MACD Mode (used for pass/fail MACD)", ["Classic MACD", "MACD‑V (Volume‑weighted)"])
     vol_mult = st.number_input("Volume multiple (vs 20‑day avg) ≥", min_value=1.0, value=1.3, step=0.1)
     rr_min = st.number_input("Min Risk/Reward", min_value=1.0, value=2.0, step=0.5)
     max_universe = st.number_input("Max tickers to scan", min_value=50, value=500, step=50)
     sleep_s = st.number_input("Sleep between downloads (sec)", min_value=0.0, value=0.3, step=0.1)
     retries = st.slider("Max retries per ticker", 0, 5, 2)
     days = st.slider("Lookback period (days)", 90, 365, 180)
-    export_filename = st.text_input("Export base filename", "sp500_scan_v35_overlay")
+    export_filename = st.text_input("Export base filename", "sp500_scan_v36_macdv")
 
-# Indicators
-def macd_classic(series, fast=12, slow=26, signal=9):
-    ema_fast = series.ewm(span=fast, adjust=False).mean()
-    ema_slow = series.ewm(span=slow, adjust=False).mean()
-    macd_line = ema_fast - ema_slow
-    signal_line = macd_line.ewm(span=signal, adjust=False).mean()
-    hist = macd_line - signal_line
-    return macd_line, signal_line, hist
-
+# Indicators (MACD‑V only)
 def vwema(price: pd.Series, volume: pd.Series, span: int) -> pd.Series:
     vp = (price * volume).ewm(span=span, adjust=False).mean()
     v = volume.ewm(span=span, adjust=False).mean().replace(0, np.nan)
@@ -63,7 +54,7 @@ def fetch_one(ticker: str, period_days: int, retries: int, sleep: float):
         time.sleep(sleep * (i + 1))
     return pd.DataFrame()
 
-# Universe loading (Wikipedia with fallback)
+# Universe loading (Wikipedia with fallback list)
 EMBEDDED_SP500 = [
 "AAPL","MSFT","GOOGL","AMZN","META","NVDA","BRK-B","UNH","XOM","LLY","JPM","V","MA","HD","PG","COST","JNJ","MRK","PEP","KO",
 "BAC","ADBE","WMT","NFLX","CRM","TMO","AVGO","CVX","LIN","TXN","PFE","ABT","CSCO","ACN","AMD","MCD","DHR","INTC","INTU","QCOM",
@@ -99,7 +90,8 @@ symbols = load_sp500_symbols()
 if len(symbols) > max_universe:
     symbols = symbols[: int(max_universe)]
 
-st.info(f"Scanning {len(symbols)} tickers…")
+# Scan on load
+st.info(f"Scanning {len(symbols)} tickers… (MACD‑V only)")
 rows, failures = [], []
 progress = st.progress(0)
 status_box = st.empty()
@@ -120,31 +112,10 @@ for idx, t in enumerate(symbols, start=1):
         e20, e50 = float(ema20.iloc[-1]), float(ema50.iloc[-1])
         trend_ok = (e20 > e50) and (c_last > e20)
 
-        # Compute BOTH MACDs for overlay
-        macd_line_c, sig_line_c, hist_c = macd_classic(close)
         macd_line_v, sig_line_v, hist_v = macd_v(close, vol)
-
-        # Use selected mode for pass/fail MACD check
-        if macd_mode == "Classic MACD":
-            macd_line, sig_line, hist = macd_line_c, sig_line_c, hist_c
-        else:
-            macd_line, sig_line, hist = macd_line_v, sig_line_v, hist_v
-
-        m_last, s_last = float(macd_line.iloc[-1]), float(sig_line.iloc[-1])
-        h_last, h_prev = float(hist.iloc[-1]), float(hist.iloc[-2])
+        m_last, s_last = float(macd_line_v.iloc[-1]), float(sig_line_v.iloc[-1])
+        h_last, h_prev = float(hist_v.iloc[-1]), float(hist_v.iloc[-2])
         macd_ok = (m_last > s_last) and (h_last > 0) and (h_last > h_prev)
-
-        # Overlay agreement
-        h_macd = float(hist_c.iloc[-1])
-        h_macdv = float(hist_v.iloc[-1])
-        macd_agree = (h_macd > 0 and h_macdv > 0) or (h_macd < 0 and h_macdv < 0)
-        macd_diverge = (h_macd * h_macdv < 0)
-        macd_overlay = 0
-        if macd_agree and h_macd > 0:
-            macd_overlay = 1
-        elif macd_diverge:
-            macd_overlay = -1
-        macd_note = "✅ Bullish aligned" if (macd_agree and h_macd > 0) else ("❌ Bearish aligned" if (macd_agree and h_macd < 0) else ("⚠️ Divergent" if macd_diverge else "Neutral"))
 
         vol_avg20 = vol.rolling(20).mean()
         v_last, v_avg = float(vol.iloc[-1]), float(vol_avg20.iloc[-1])
@@ -160,19 +131,10 @@ for idx, t in enumerate(symbols, start=1):
             target, rr, rr_ok = None, None, False
 
         catalyst, catalyst_reason = False, "—"
-        base_score = int(trend_ok) + int(macd_ok) + int(vol_ok) + int(rr_ok) + int(catalyst)
-        adj_score = max(0, min(5, base_score + macd_overlay))
+        score = int(trend_ok) + int(macd_ok) + int(vol_ok) + int(rr_ok) + int(catalyst)
 
-        status, notes = "Pass", ""
-        if adj_score >= 3:
-            if adj_score == 5:
-                status, notes = "PRIME", "Clean TA + Catalyst"
-            elif adj_score == 4 and catalyst:
-                status, notes = "Catalyst PRIME", "News-driven"
-            elif adj_score == 4:
-                status, notes = "Strong TA", "Clean technicals"
-            elif adj_score == 3:
-                status, notes = "Candidate", "Early setup"
+        if score >= 3:
+            status, notes = ("PRIME","Clean TA + Catalyst") if score == 5 else                             (("Catalyst PRIME","News-driven") if (score == 4 and catalyst) else                              (("Strong TA","Clean technicals") if score == 4 else ("Candidate","Early setup")))
 
             rows.append({
                 "Ticker": t,
@@ -180,14 +142,10 @@ for idx, t in enumerate(symbols, start=1):
                 "Stop(EMA50)": round(stop, 2) if stop else None,
                 "Target": round(target, 2) if target else None,
                 "R/R": round(rr, 2) if rr else None,
-                "Score (0-5)": base_score,
-                "Overlay (+1/0/-1)": macd_overlay,
-                "Adj Score (0-5)": adj_score,
-                "MACD Note": macd_note,
+                "Score (0-5)": score,
                 "Status": status,
-                "Catalyst": catalyst_reason,
                 "Notes": notes,
-                "MACD Mode": macd_mode,
+                "MACD": "MACD‑V",
             })
     except Exception as e:
         failures.append((t, str(e)))
@@ -197,7 +155,7 @@ for idx, t in enumerate(symbols, start=1):
 
 # Output
 if rows:
-    df = pd.DataFrame(rows).sort_values(["Adj Score (0-5)","Status","R/R"], ascending=[False, True, False])
+    df = pd.DataFrame(rows).sort_values(["Score (0-5)","Status","R/R"], ascending=[False, True, False])
     st.subheader("Results")
     st.dataframe(df, use_container_width=True)
     csv = df.to_csv(index=False).encode("utf-8")
